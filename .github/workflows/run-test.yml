@@ -1,0 +1,83 @@
+name: Run DotNet Tests
+
+on:
+  push:
+    branches: [main]
+  repository_dispatch:
+    types: [run-tests]
+  workflow_dispatch:
+
+jobs:
+  dotnet-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout DotNet repo
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.PAT_TOKEN }}
+
+      - name: Pull and run Docker containers
+        run: |
+          docker pull ghcr.io/platoalberta/fullstackapplicationcourselibrary/api:latest
+          docker pull ghcr.io/platoalberta/fullstackapplicationcourselibrary/client:latest
+
+          # Create network
+          docker network create app-network
+
+          # Run API container
+          docker run -d --name api --network app-network -p 5000:5000 \
+            ghcr.io/platoalberta/fullstackapplicationcourselibrary/api:latest
+
+          # Run Client container
+          docker run -d --name client --network app-network -p 3000:3000 \
+            ghcr.io/platoalberta/fullstackapplicationcourselibrary/client:latest
+
+          # Wait for services to be ready
+          sleep 30
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore
+
+      - name: Install Playwright
+        run: dotnet tool install --global Microsoft.Playwright.CLI
+
+      - name: Install Playwright browsers
+        run: playwright install --with-deps
+
+      - name: Run Playwright tests
+        run: dotnet test --no-build --verbosity normal
+        env:
+          BaseApiUrl: http://localhost:5000/api
+          BaseUrl: http://localhost:3000
+          TestEmail: ${{ secrets.TEST_EMAIL }}
+          TestPassword: ${{ secrets.TEST_PASSWORD }}
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: |
+            TestResults/
+            playwright-report/
+
+      - name: Cleanup containers
+        if: always()
+        run: |
+          docker stop api client || true
+          docker rm api client || true
+          docker network rm app-network || true
